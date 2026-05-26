@@ -89,6 +89,7 @@ export class RelayBot {
         channelId: this.cfg.channelId,
         guildId,
         adapterCreator: guild.voiceAdapterCreator,
+        group: this.client.user?.id ?? this.cfg.name,
         selfDeaf: false,
         selfMute: false,
       });
