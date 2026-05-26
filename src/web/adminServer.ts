@@ -240,7 +240,7 @@ function renderAdminPage(): string {
 
     async function load() {
       $("error").textContent = "";
-      const res = await fetch("/api/config");
+      const res = await fetch("api/config");
       const data = await res.json();
       $("status").textContent = data.status || "unknown";
       if (!data.config) {
@@ -254,7 +254,7 @@ function renderAdminPage(): string {
 
     async function save() {
       $("error").textContent = "";
-      const res = await fetch("/api/config", {
+      const res = await fetch("api/config", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(readForm()),
@@ -277,7 +277,7 @@ function renderAdminPage(): string {
     $("save").addEventListener("click", save);
     $("restart").addEventListener("click", async () => {
       $("error").textContent = "";
-      const res = await fetch("/api/restart", { method: "POST" });
+      const res = await fetch("api/restart", { method: "POST" });
       const data = await res.json();
       if (!res.ok) $("error").textContent = data.message || JSON.stringify(data);
       $("status").textContent = data.status || "restarted";
