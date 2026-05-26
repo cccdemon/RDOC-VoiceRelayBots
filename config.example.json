@@ -8,7 +8,7 @@
   "discord": {
     "guildId": "DISCORD_GUILD_ID",
     "bots": [
-      { "token": "DISCORD_BOT_TOKEN", "channelId": "DISCORD_VOICE_CHANNEL_ID", "name": "funkrelais 10/b" }
+      { "token": "DISCORD_BOT_TOKEN", "channelId": "DISCORD_VOICE_CHANNEL_ID", "name": "Funker Bob" }
     ]
   }
 }

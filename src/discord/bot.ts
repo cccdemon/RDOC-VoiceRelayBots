@@ -82,6 +82,7 @@ export class RelayBot {
 
     console.log(`[${this.cfg.name}] fetching guild ${guildId}`);
     const guild = await this.client.guilds.fetch(guildId);
+    await this.syncNickname(guild);
     console.log(`[${this.cfg.name}] fetching channel ${this.cfg.channelId}`);
     const channel = await guild.channels.fetch(this.cfg.channelId);
 
@@ -92,6 +93,17 @@ export class RelayBot {
 
     this.targetChannel = channel as VoiceBasedChannel;
     return this.targetChannel;
+  }
+
+  private async syncNickname(guild: VoiceBasedChannel["guild"]): Promise<void> {
+    try {
+      const member = await guild.members.fetchMe();
+      if (member.nickname === this.cfg.name) return;
+      await member.setNickname(this.cfg.name, "RDOC voice relay display name");
+      console.log(`[${this.cfg.name}] set server nickname`);
+    } catch (err) {
+      console.warn(`[${this.cfg.name}] could not set server nickname:`, err);
+    }
   }
 
   private schedulePresenceCheck(guildId: string): void {
