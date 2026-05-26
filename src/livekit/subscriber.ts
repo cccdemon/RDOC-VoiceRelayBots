@@ -1,4 +1,11 @@
-import { Room, RoomEvent, TrackKind, type RemoteAudioTrack, type AudioFrame } from "@livekit/rtc-node";
+import {
+  AudioStream,
+  Room,
+  RoomEvent,
+  TrackKind,
+  type RemoteAudioTrack,
+  type AudioFrame,
+} from "@livekit/rtc-node";
 import { AccessToken } from "livekit-server-sdk";
 
 export type PcmHandler = (pcm: Buffer) => void;
@@ -32,10 +39,7 @@ export class LivekitSubscriber {
     this.room.on(RoomEvent.TrackSubscribed, (track) => {
       if (track.kind !== TrackKind.KIND_AUDIO) return;
       const audioTrack = track as RemoteAudioTrack;
-      // @livekit/rtc-node emits audioFrameReceived on RemoteAudioTrack
-      audioTrack.on("audioFrameReceived", (frame: AudioFrame) => {
-        this.onFrame(toStereoPcm(frame));
-      });
+      this.readAudioTrack(audioTrack);
     });
 
     this.room.on(RoomEvent.Disconnected, () => {
@@ -57,6 +61,30 @@ export class LivekitSubscriber {
       console.error("[LivekitSubscriber] reconnect failed:", err);
       this.reconnectTimer = setTimeout(() => void this.reconnect(), 5000);
     }
+  }
+
+  private readAudioTrack(track: RemoteAudioTrack): void {
+    const stream = new AudioStream(track, {
+      sampleRate: 48000,
+      numChannels: 1,
+    });
+    const reader = stream.getReader();
+
+    void (async () => {
+      try {
+        while (!this.destroyed) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          this.onFrame(toStereoPcm(value));
+        }
+      } catch (err) {
+        if (!this.destroyed) {
+          console.warn("[LivekitSubscriber] audio stream stopped:", err);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    })();
   }
 
   async disconnect(): Promise<void> {
