@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 
 const BotConfigSchema = z.object({
@@ -7,7 +7,7 @@ const BotConfigSchema = z.object({
   name: z.string().min(1),
 });
 
-const ConfigSchema = z.object({
+export const ConfigSchema = z.object({
   livekit: z.object({
     url: z.string().url(),
     apiKey: z.string().min(1),
@@ -38,4 +38,20 @@ export function loadConfig(path = "config.json"): Config {
     throw new Error(`Invalid config:\n${issues}`);
   }
   return result.data;
+}
+
+export function parseConfig(raw: unknown): Config {
+  const result = ConfigSchema.safeParse(raw);
+  if (!result.success) {
+    const issues = result.error.issues
+      .map((i) => `  ${i.path.join(".")}: ${i.message}`)
+      .join("\n");
+    throw new Error(`Invalid config:\n${issues}`);
+  }
+  return result.data;
+}
+
+export function saveConfig(config: Config, path = "config.json"): void {
+  const parsed = parseConfig(config);
+  writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
 }

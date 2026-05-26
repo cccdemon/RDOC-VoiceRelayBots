@@ -2,5 +2,11 @@ services:
   voice-relay-bots:
     build: .
     restart: unless-stopped
+    environment:
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: 8788
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+    ports:
+      - "127.0.0.1:8788:8788"
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./config.json:/app/config.json
