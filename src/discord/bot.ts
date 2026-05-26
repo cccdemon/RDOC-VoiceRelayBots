@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, type VoiceBasedChannel } from "discord.js";
+import { Client, Events, GatewayIntentBits, type VoiceBasedChannel } from "discord.js";
 import {
   joinVoiceChannel,
   createAudioPlayer,
@@ -17,13 +17,16 @@ const SILENCE_TIMEOUT_MS = 300;
 const RECONNECT_DELAY_MS = 5000;
 const JOIN_TIMEOUT_MS = 30_000;
 const LOGIN_TIMEOUT_MS = 30_000;
+const PRESENCE_DEBOUNCE_MS = 500;
 
 export class RelayBot {
   private client: Client;
   private connection: VoiceConnection | null = null;
   private player: AudioPlayer;
+  private targetChannel: VoiceBasedChannel | null = null;
   private passThrough: PassThrough | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  private presenceTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed = false;
   private reconnecting = false;
 
@@ -46,7 +49,14 @@ export class RelayBot {
     await this.client.login(this.cfg.token);
     await this.waitUntilReady();
     console.log(`[${this.cfg.name}] logged in as ${this.client.user?.tag ?? "unknown"}`);
-    await this.joinChannel(guildId);
+
+    await this.fetchTargetChannel(guildId);
+    this.client.on("voiceStateUpdate", (oldState, newState) => {
+      if (oldState.channelId === this.cfg.channelId || newState.channelId === this.cfg.channelId) {
+        this.schedulePresenceCheck(guildId);
+      }
+    });
+    await this.syncVoicePresence(guildId);
   }
 
   private async waitUntilReady(): Promise<void> {
@@ -54,7 +64,7 @@ export class RelayBot {
 
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.client.off("ready", onReady);
+        this.client.off(Events.ClientReady, onReady);
         reject(new Error(`Discord client did not become ready within ${LOGIN_TIMEOUT_MS} ms`));
       }, LOGIN_TIMEOUT_MS);
 
@@ -63,32 +73,71 @@ export class RelayBot {
         resolve();
       };
 
-      this.client.once("ready", onReady);
+      this.client.once(Events.ClientReady, onReady);
     });
+  }
+
+  private async fetchTargetChannel(guildId: string): Promise<VoiceBasedChannel | null> {
+    if (this.targetChannel) return this.targetChannel;
+
+    console.log(`[${this.cfg.name}] fetching guild ${guildId}`);
+    const guild = await this.client.guilds.fetch(guildId);
+    console.log(`[${this.cfg.name}] fetching channel ${this.cfg.channelId}`);
+    const channel = await guild.channels.fetch(this.cfg.channelId);
+
+    if (!channel?.isVoiceBased()) {
+      console.error(`[${this.cfg.name}] channel ${this.cfg.channelId} is not a voice channel`);
+      return null;
+    }
+
+    this.targetChannel = channel as VoiceBasedChannel;
+    return this.targetChannel;
+  }
+
+  private schedulePresenceCheck(guildId: string): void {
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    this.presenceTimer = setTimeout(() => {
+      this.presenceTimer = null;
+      void this.syncVoicePresence(guildId);
+    }, PRESENCE_DEBOUNCE_MS);
+  }
+
+  private async syncVoicePresence(guildId: string): Promise<void> {
+    if (this.destroyed) return;
+    const channel = await this.fetchTargetChannel(guildId);
+    if (!channel) return;
+
+    const hasHumans = channel.members.some((member) => !member.user.bot);
+    if (hasHumans) {
+      await this.joinChannel(guildId);
+      return;
+    }
+
+    if (this.connection) {
+      console.log(`[${this.cfg.name}] leaving #${channel.name} because no humans are present`);
+      this.disconnectVoice();
+    } else {
+      console.log(`[${this.cfg.name}] waiting outside #${channel.name}; no humans present`);
+    }
   }
 
   private async joinChannel(guildId: string): Promise<void> {
     if (this.destroyed) return;
+    if (this.connection) return;
     if (this.reconnecting) return;
     this.reconnecting = true;
 
     try {
-      console.log(`[${this.cfg.name}] fetching guild ${guildId}`);
-      const guild = await this.client.guilds.fetch(guildId);
-      console.log(`[${this.cfg.name}] fetching channel ${this.cfg.channelId}`);
-      const channel = await guild.channels.fetch(this.cfg.channelId);
-
-      if (!channel?.isVoiceBased()) {
-        console.error(`[${this.cfg.name}] channel ${this.cfg.channelId} is not a voice channel`);
+      const channel = await this.fetchTargetChannel(guildId);
+      if (!channel) {
         this.reconnecting = false;
         return;
       }
 
-      this.connection?.destroy();
       this.connection = joinVoiceChannel({
         channelId: this.cfg.channelId,
         guildId,
-        adapterCreator: guild.voiceAdapterCreator,
+        adapterCreator: channel.guild.voiceAdapterCreator,
         group: this.client.user?.id ?? this.cfg.name,
         selfDeaf: false,
         selfMute: false,
@@ -99,24 +148,37 @@ export class RelayBot {
 
       this.connection.on(VoiceConnectionStatus.Disconnected, () => {
         if (this.destroyed) return;
-        console.warn(`[${this.cfg.name}] voice disconnected — scheduling reconnect`);
+        console.warn(`[${this.cfg.name}] voice disconnected - checking whether reconnect is needed`);
+        this.connection = null;
         this.reconnecting = false;
-        setTimeout(() => void this.joinChannel(guildId), RECONNECT_DELAY_MS);
+        setTimeout(() => void this.syncVoicePresence(guildId), RECONNECT_DELAY_MS);
       });
 
-      const voiceChannel = channel as VoiceBasedChannel;
-      console.log(`[${this.cfg.name}] joined #${voiceChannel.name}`);
+      console.log(`[${this.cfg.name}] joined #${channel.name}`);
     } catch (err) {
       console.error(`[${this.cfg.name}] join failed:`, err);
       if (!this.destroyed) {
         setTimeout(() => {
           this.reconnecting = false;
-          void this.joinChannel(guildId);
+          void this.syncVoicePresence(guildId);
         }, RECONNECT_DELAY_MS);
         return;
       }
     }
 
+    this.reconnecting = false;
+  }
+
+  private disconnectVoice(): void {
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    this.passThrough?.end();
+    this.passThrough = null;
+    this.player.stop();
+    this.connection?.destroy();
+    this.connection = null;
     this.reconnecting = false;
   }
 
@@ -154,11 +216,8 @@ export class RelayBot {
 
   async destroy(): Promise<void> {
     this.destroyed = true;
-    if (this.silenceTimer) clearTimeout(this.silenceTimer);
-    this.passThrough?.end();
-    this.passThrough = null;
-    this.connection?.destroy();
-    this.connection = null;
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    this.disconnectVoice();
     await this.client.destroy();
   }
 }
