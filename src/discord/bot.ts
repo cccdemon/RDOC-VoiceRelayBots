@@ -16,6 +16,7 @@ import type { BotConfig } from "../config.js";
 const SILENCE_TIMEOUT_MS = 300;
 const RECONNECT_DELAY_MS = 5000;
 const JOIN_TIMEOUT_MS = 30_000;
+const LOGIN_TIMEOUT_MS = 30_000;
 
 export class RelayBot {
   private client: Client;
@@ -41,10 +42,29 @@ export class RelayBot {
   }
 
   async start(guildId: string): Promise<void> {
+    console.log(`[${this.cfg.name}] logging in`);
     await this.client.login(this.cfg.token);
-    await new Promise<void>((resolve) => this.client.once("ready", () => resolve()));
+    await this.waitUntilReady();
     console.log(`[${this.cfg.name}] logged in as ${this.client.user?.tag ?? "unknown"}`);
     await this.joinChannel(guildId);
+  }
+
+  private async waitUntilReady(): Promise<void> {
+    if (this.client.isReady()) return;
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.client.off("ready", onReady);
+        reject(new Error(`Discord client did not become ready within ${LOGIN_TIMEOUT_MS} ms`));
+      }, LOGIN_TIMEOUT_MS);
+
+      const onReady = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+
+      this.client.once("ready", onReady);
+    });
   }
 
   private async joinChannel(guildId: string): Promise<void> {
@@ -53,7 +73,9 @@ export class RelayBot {
     this.reconnecting = true;
 
     try {
+      console.log(`[${this.cfg.name}] fetching guild ${guildId}`);
       const guild = await this.client.guilds.fetch(guildId);
+      console.log(`[${this.cfg.name}] fetching channel ${this.cfg.channelId}`);
       const channel = await guild.channels.fetch(this.cfg.channelId);
 
       if (!channel?.isVoiceBased()) {
