@@ -1,0 +1,16 @@
+{
+  "livekit": {
+    "url": "wss://voice.raumdock.org",
+    "apiKey": "YOUR_LIVEKIT_API_KEY",
+    "apiSecret": "YOUR_LIVEKIT_API_SECRET",
+    "relayRoomName": "voice-relay"
+  },
+  "discord": {
+    "guildId": "YOUR_DISCORD_SERVER_ID",
+    "bots": [
+      { "token": "BOT_TOKEN_1", "channelId": "VOICE_CHANNEL_ID_1", "name": "Relay 1" },
+      { "token": "BOT_TOKEN_2", "channelId": "VOICE_CHANNEL_ID_2", "name": "Relay 2" },
+      { "token": "BOT_TOKEN_3", "channelId": "VOICE_CHANNEL_ID_3", "name": "Relay 3" }
+    ]
+  }
+}

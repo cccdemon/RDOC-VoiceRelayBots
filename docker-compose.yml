@@ -1,0 +1,6 @@
+services:
+  voice-relay-bots:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json:ro
