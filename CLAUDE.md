@@ -182,6 +182,32 @@ services:
 | 6 | Bridge relay token endpoint + companion "Voice to All" button. End-to-end test. |
 | 7 | Docker, update RDOC-RTC STAND.md, deploy. |
 
+## Bridge integration (2026-05-27)
+
+VoiceRelayBots can now pull its full config from the RDOC-RTC bridge admin at startup.
+Set `bridge.url` and `bridge.serviceSecret` in `config.json`:
+
+```json
+{
+  "bridge": {
+    "url": "https://voice.raumdock.org/dccc",
+    "serviceSecret": "RELAY_BOTS_SECRET_VALUE"
+  },
+  "livekit": { ... },  ← used as fallback only when bridge not reachable
+  "discord": { ... }   ← used as fallback only
+}
+```
+
+When bridge config is active, the bridge's `RelayBotsConfig` DB row overrides local `livekit`
+and `discord` fields. Local config is the fallback if the bridge is unreachable.
+
+The admin server exposes two new endpoints:
+- `GET /api/voice-states` — returns guild voice states from the bot Gateway cache (consumed by bridge's Discord Voice page)
+- `POST /api/reload` — triggered by bridge after a config save to restart the relay
+
+The bridge's admin UI at `<bridge>/admin/ui/relay-bots` replaces the standalone admin at port 8788.
+Both UIs remain functional; the bridge UI uses Discord OAuth, the standalone UI uses HTTP Basic.
+
 ## Open decisions (resolve before Phase 1)
 
 - **Always-connected bots or connect on demand?** Recommendation: always connected (simplest; Discord does not penalize idle bots in voice).

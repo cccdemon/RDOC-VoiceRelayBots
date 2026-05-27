@@ -1,4 +1,9 @@
 {
+  "_comment": "Set bridge.url + bridge.serviceSecret to pull config from the RDOC-RTC bridge (replaces livekit/discord fields). Remove the bridge block to use local config only.",
+  "bridge": {
+    "url": "https://voice.raumdock.org/dccc",
+    "serviceSecret": "RELAY_BOTS_SECRET_VALUE_FROM_BRIDGE_ENV"
+  },
   "livekit": {
     "url": "wss://voice.raumdock.org",
     "apiKey": "LIVEKIT_API_KEY",

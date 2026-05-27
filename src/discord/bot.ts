@@ -232,4 +232,14 @@ export class RelayBot {
     this.disconnectVoice();
     await this.client.destroy();
   }
+
+  getVoiceStates(guildId: string): { channel_id: string | null; user_id: string; displayName: string }[] {
+    const guild = this.client.guilds.cache.get(guildId);
+    if (!guild) return [];
+    return [...guild.voiceStates.cache.entries()].map(([userId, vs]) => ({
+      channel_id: vs.channelId,
+      user_id: userId,
+      displayName: vs.member?.displayName ?? vs.member?.user.username ?? userId,
+    }));
+  }
 }

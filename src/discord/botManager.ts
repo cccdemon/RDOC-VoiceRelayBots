@@ -31,4 +31,10 @@ export class BotManager {
     await Promise.all(this.bots.map((b) => b.destroy()));
     this.bots = [];
   }
+
+  getVoiceStates(guildId: string): { channel_id: string | null; user_id: string; displayName: string }[] {
+    const first = this.bots[0];
+    if (!first) return [];
+    return first.getVoiceStates(guildId);
+  }
 }

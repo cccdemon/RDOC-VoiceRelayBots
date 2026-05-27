@@ -8,6 +8,15 @@ const BotConfigSchema = z.object({
 });
 
 export const ConfigSchema = z.object({
+  // Optional bridge integration: fetch config remotely from the RDOC-RTC bridge.
+  // When set, livekit/discord fields are overridden by the bridge's stored config.
+  bridge: z
+    .object({
+      url: z.string().url(),
+      serviceSecret: z.string().min(1),
+    })
+    .optional(),
+
   livekit: z.object({
     url: z.string().url(),
     apiKey: z.string().min(1),

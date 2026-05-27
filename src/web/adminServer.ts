@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { Buffer } from "node:buffer";
 import type { Config } from "../config.js";
 import { parseConfig, saveConfig } from "../config.js";
+import type { BotManager } from "../discord/botManager.js";
 
 type AdminServerOptions = {
   host: string;
@@ -10,6 +11,7 @@ type AdminServerOptions = {
   getConfig: () => Config | null;
   getStatus: () => string;
   reload: (config: Config) => Promise<void>;
+  getBots: () => BotManager | null;
 };
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -78,6 +80,29 @@ async function handleRequest(
     }
     await options.reload(config);
     sendJson(res, 200, { ok: true, status: options.getStatus() });
+    return;
+  }
+
+  // POST /api/reload — triggered by the bridge after a config save
+  if (req.method === "POST" && url.pathname === "/api/reload") {
+    const config = options.getConfig();
+    if (config) {
+      void options.reload(config).catch(() => undefined);
+    }
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // GET /api/voice-states — returns guild voice state data from the bot Gateway cache
+  if (req.method === "GET" && url.pathname === "/api/voice-states") {
+    const cfg = options.getConfig();
+    const bots = options.getBots();
+    if (!bots || !cfg) {
+      sendJson(res, 200, []);
+      return;
+    }
+    const states = bots.getVoiceStates(cfg.discord.guildId);
+    sendJson(res, 200, states);
     return;
   }
 
