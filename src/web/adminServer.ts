@@ -43,6 +43,12 @@ async function handleRequest(
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
 
+  // Prometheus scraper hits /metrics without auth — port is internal-only
+  if (req.method === "GET" && url.pathname === "/metrics") {
+    sendPrometheus(res, options.getMetrics());
+    return;
+  }
+
   if (password && !isAuthorized(req, password)) {
     res.writeHead(401, {
       "www-authenticate": 'Basic realm="RDOC Voice Relay Bots"',
@@ -137,6 +143,51 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     chunks.push(buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+}
+
+function sendPrometheus(res: ServerResponse, m: RelayMetrics): void {
+  const lines: string[] = [];
+
+  function metric(
+    name: string,
+    help: string,
+    type: "gauge" | "counter",
+    values: Array<{ labels?: Record<string, string>; value: number }>,
+  ): void {
+    lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`);
+    for (const { labels, value } of values) {
+      const lab = labels
+        ? "{" +
+          Object.entries(labels)
+            .map(([k, v]) => `${k}="${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
+            .join(",") +
+          "}"
+        : "";
+      lines.push(`${name}${lab} ${value}`);
+    }
+  }
+
+  metric("relay_uptime_seconds", "Relay uptime in seconds", "gauge", [{ value: m.uptimeMs / 1000 }]);
+  metric("relay_frames_received_total", "PCM frames received from LiveKit since relay start", "counter", [{ value: m.framesReceived }]);
+  metric("relay_bytes_received_total", "PCM bytes received from LiveKit since relay start", "counter", [{ value: m.bytesReceived }]);
+  metric("relay_last_audio_timestamp_seconds", "Unix timestamp of last audio frame (0 = none)", "gauge", [{ value: m.lastAudioAt ? m.lastAudioAt / 1000 : 0 }]);
+  metric("relay_watchdog_restarts_total", "Watchdog-triggered relay restarts", "counter", [{ value: m.watchdogRestarts }]);
+  metric("relay_process_rss_bytes", "Process RSS memory in bytes", "gauge", [{ value: m.process.rssBytes }]);
+  metric("relay_process_heap_used_bytes", "V8 heap used in bytes", "gauge", [{ value: m.process.heapUsedBytes }]);
+  metric("relay_process_heap_total_bytes", "V8 heap total in bytes", "gauge", [{ value: m.process.heapTotalBytes }]);
+  metric("relay_bot_voice_connected", "Bot has active voice connection (1=yes)", "gauge",
+    m.bots.map((b) => ({ labels: { bot: b.name }, value: b.voiceConnected ? 1 : 0 })));
+  metric("relay_bot_speaking", "Bot is currently playing audio (1=yes)", "gauge",
+    m.bots.map((b) => ({ labels: { bot: b.name }, value: b.speaking ? 1 : 0 })));
+  metric("relay_bot_buffer_bytes", "PassThrough write-buffer backlog in bytes", "gauge",
+    m.bots.map((b) => ({ labels: { bot: b.name }, value: b.bufferBytes })));
+  metric("relay_bot_buffer_overflows_total", "Total buffer overflow drop events", "counter",
+    m.bots.map((b) => ({ labels: { bot: b.name }, value: b.bufferOverflows })));
+  metric("relay_bot_reconnect_count_total", "Total voice channel reconnection events", "counter",
+    m.bots.map((b) => ({ labels: { bot: b.name }, value: b.reconnectCount })));
+
+  res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8", "cache-control": "no-store" });
+  res.end(lines.join("\n") + "\n");
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
