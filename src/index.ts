@@ -1,6 +1,7 @@
 import { loadConfig, type Config } from "./config.js";
 import { BotManager } from "./discord/botManager.js";
 import { LivekitSubscriber } from "./livekit/subscriber.js";
+import type { RelayMetrics, ProcessMetrics } from "./metrics.js";
 import { startAdminServer } from "./web/adminServer.js";
 
 const CONFIG_PATH = process.env.CONFIG_PATH ?? "config.json";
@@ -52,13 +53,32 @@ let currentStatus = "starting";
 let bots: BotManager | null = null;
 let subscriber: LivekitSubscriber | null = null;
 
+const WATCHDOG_INTERVAL_MS = 10_000;
+// Restart if more than this many buffer overflows happen in a single 10s tick
+const OVERFLOW_RESTART_THRESHOLD = 5;
+// Restart after all bots stay disconnected for this many consecutive ticks (10s each)
+const DISCONNECT_RESTART_TICKS = 9; // ~90 s
+
+// Global audio counters — reset on each relay start.
+let relayStartedAt = Date.now();
+let framesReceived = 0;
+let bytesReceived = 0;
+let lastAudioAt: number | null = null;
+let watchdogRestarts = 0;
+let consecutiveAllDisconnectedTicks = 0;
+
 async function startRelay(cfg: Config): Promise<void> {
   currentStatus = "starting relay";
   const merged = await applyBridgeConfig(cfg);
   console.log(`[Startup] guild=${merged.discord.guildId} bots=${merged.discord.bots.length} room=${merged.livekit.relayRoomName}`);
 
   const nextBots = new BotManager();
-  const nextSubscriber = new LivekitSubscriber((pcm) => nextBots.pushPcm(pcm));
+  const nextSubscriber = new LivekitSubscriber((pcm) => {
+    framesReceived++;
+    bytesReceived += pcm.byteLength;
+    lastAudioAt = Date.now();
+    nextBots.pushPcm(pcm);
+  });
 
   try {
     await nextBots.start(merged.discord.guildId, merged.discord.bots);
@@ -79,6 +99,10 @@ async function startRelay(cfg: Config): Promise<void> {
   subscriber = nextSubscriber;
   currentConfig = merged;
   currentStatus = "ready";
+  relayStartedAt = Date.now();
+  framesReceived = 0;
+  bytesReceived = 0;
+  lastAudioAt = null;
   console.log("[Ready] voice relay is active - waiting for audio");
 }
 
@@ -97,6 +121,62 @@ async function reloadRelay(cfg: Config): Promise<void> {
   await startRelay(cfg);
 }
 
+function sampleProcessMetrics(): ProcessMetrics {
+  const mem = process.memoryUsage();
+  const cpu = process.cpuUsage();
+  return {
+    rssBytes: mem.rss,
+    heapUsedBytes: mem.heapUsed,
+    heapTotalBytes: mem.heapTotal,
+    cpuUserMs: Math.round(cpu.user / 1000),
+    cpuSystemMs: Math.round(cpu.system / 1000),
+  };
+}
+
+function getMetrics(): RelayMetrics {
+  return {
+    uptimeMs: Date.now() - relayStartedAt,
+    framesReceived,
+    bytesReceived,
+    lastAudioAt,
+    watchdogRestarts,
+    process: sampleProcessMetrics(),
+    bots: bots?.getMetrics() ?? [],
+  };
+}
+
+function startWatchdog(): void {
+  setInterval(() => {
+    void (async () => {
+      if (!bots || !currentConfig) return;
+
+      const overflows = bots.drainRecentOverflows();
+      if (overflows > OVERFLOW_RESTART_THRESHOLD) {
+        console.warn(`[Watchdog] ${overflows} buffer overflows in tick — restarting relay`);
+        watchdogRestarts++;
+        consecutiveAllDisconnectedTicks = 0;
+        await reloadRelay(currentConfig).catch((err) => console.error("[Watchdog] restart failed:", err));
+        return;
+      }
+
+      const botMetrics = bots.getMetrics();
+      const allDisconnected = botMetrics.length > 0 && botMetrics.every((b) => !b.voiceConnected);
+      if (allDisconnected) {
+        consecutiveAllDisconnectedTicks++;
+        console.warn(`[Watchdog] all bots disconnected (${consecutiveAllDisconnectedTicks}/${DISCONNECT_RESTART_TICKS} ticks)`);
+        if (consecutiveAllDisconnectedTicks >= DISCONNECT_RESTART_TICKS) {
+          console.warn("[Watchdog] disconnect threshold reached — restarting relay");
+          watchdogRestarts++;
+          consecutiveAllDisconnectedTicks = 0;
+          await reloadRelay(currentConfig).catch((err) => console.error("[Watchdog] restart failed:", err));
+        }
+      } else {
+        consecutiveAllDisconnectedTicks = 0;
+      }
+    })();
+  }, WATCHDOG_INTERVAL_MS);
+}
+
 async function main(): Promise<void> {
   startAdminServer({
     host: ADMIN_HOST,
@@ -106,7 +186,10 @@ async function main(): Promise<void> {
     getStatus: () => currentStatus,
     reload: reloadRelay,
     getBots: () => bots,
+    getMetrics,
   });
+
+  startWatchdog();
 
   try {
     await startRelay(loadConfig(CONFIG_PATH));

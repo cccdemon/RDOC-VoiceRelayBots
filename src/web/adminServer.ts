@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import type { Config } from "../config.js";
 import { parseConfig, saveConfig } from "../config.js";
 import type { BotManager } from "../discord/botManager.js";
+import type { RelayMetrics } from "../metrics.js";
 
 type AdminServerOptions = {
   host: string;
@@ -12,6 +13,7 @@ type AdminServerOptions = {
   getStatus: () => string;
   reload: (config: Config) => Promise<void>;
   getBots: () => BotManager | null;
+  getMetrics: () => RelayMetrics;
 };
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -90,6 +92,11 @@ async function handleRequest(
       void options.reload(config).catch(() => undefined);
     }
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/metrics") {
+    sendJson(res, 200, options.getMetrics());
     return;
   }
 
@@ -174,7 +181,31 @@ function renderAdminPage(): string {
     .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
     .error { color: #fecaca; white-space: pre-wrap; }
     .hint { color: #94a3b8; font-size: 13px; margin-top: 8px; }
-    @media (max-width: 850px) { .grid, .bot { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } }
+    /* metrics */
+    .m-chips { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+    .m-chip { background: #1b1f2a; border: 1px solid #2b3140; border-radius: 6px; padding: 8px 14px; min-width: 100px; }
+    .m-chip .lbl { color: #64748b; font-size: 11px; margin-bottom: 3px; }
+    .m-chip .val { font-size: 15px; font-weight: 600; }
+    .m-bots { display: flex; flex-direction: column; gap: 8px; }
+    .m-bot { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid #2b3140; border-radius: 6px; background: #1b1f2a; }
+    .m-bot-name { font-weight: 600; min-width: 130px; }
+    .m-state { font-size: 11px; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+    .s-playing  { background: #14532d; color: #86efac; }
+    .s-idle     { background: #1e293b; color: #94a3b8; }
+    .s-autopaused { background: #1e293b; color: #475569; }
+    .s-buffering { background: #78350f; color: #fcd34d; }
+    .m-conn { font-size: 11px; color: #64748b; white-space: nowrap; }
+    .m-buf-wrap { flex: 1; min-width: 80px; }
+    .m-buf-lbl { font-size: 11px; color: #64748b; margin-bottom: 3px; }
+    .m-buf-track { height: 5px; background: #0f131b; border-radius: 3px; overflow: hidden; }
+    .m-buf-fill { height: 100%; border-radius: 3px; transition: width 0.4s, background 0.4s; }
+    .buf-ok   { background: #22c55e; }
+    .buf-warn { background: #f59e0b; }
+    .buf-crit { background: #ef4444; }
+    .m-overflow { font-size: 11px; color: #f87171; white-space: nowrap; }
+    .m-reconnect { font-size: 11px; color: #94a3b8; white-space: nowrap; }
+    .m-chip.warn .val { color: #f87171; }
+    @media (max-width: 850px) { .grid, .bot { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } .m-bot { flex-wrap: wrap; } }
   </style>
 </head>
 <body>
@@ -183,6 +214,12 @@ function renderAdminPage(): string {
       <h1>RDOC Voice Relay Bots</h1>
       <div class="status" id="status">loading</div>
     </header>
+
+    <section>
+      <h2>Live Metrics <span style="font-size:11px;color:#475569">· auto-refresh 2 s</span></h2>
+      <div class="m-chips" id="m-global"></div>
+      <div class="m-bots" id="m-bots"></div>
+    </section>
 
     <section>
       <h2>LiveKit</h2>
@@ -217,6 +254,8 @@ function renderAdminPage(): string {
   <script>
     let config = null;
     const $ = (id) => document.getElementById(id);
+
+    // ── Config form ──────────────────────────────────────────────────────────
 
     function botTemplate(bot, index) {
       const div = document.createElement("div");
@@ -307,7 +346,86 @@ function renderAdminPage(): string {
       if (!res.ok) $("error").textContent = data.message || JSON.stringify(data);
       $("status").textContent = data.status || "restarted";
     });
+
     load().catch((err) => $("error").textContent = String(err));
+
+    // ── Metrics ──────────────────────────────────────────────────────────────
+
+    // 1 second of stereo s16le — must match MAX_BUFFER_BYTES in bot.ts
+    const MAX_BUF = 48_000 * 2 * 2 * 1;
+
+    function fmtDuration(ms) {
+      const s = Math.floor(ms / 1000);
+      const m = Math.floor(s / 60);
+      const h = Math.floor(m / 60);
+      if (h > 0) return h + "h " + (m % 60) + "m";
+      if (m > 0) return m + "m " + (s % 60) + "s";
+      return s + "s";
+    }
+
+    function fmtBytes(b) {
+      if (b < 1024) return b + " B";
+      if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+      return (b / 1024 / 1024).toFixed(1) + " MB";
+    }
+
+    function chip(label, value, warn) {
+      return '<div class="m-chip' + (warn ? ' warn' : '') + '"><div class="lbl">' + label + '</div><div class="val">' + value + '</div></div>';
+    }
+
+    async function loadMetrics() {
+      const res = await fetch("api/metrics").catch(() => null);
+      if (!res || !res.ok) return;
+      const m = await res.json();
+
+      const lastAudio = m.lastAudioAt
+        ? Math.round((Date.now() - m.lastAudioAt) / 1000) + " s ago"
+        : "—";
+
+      const p = m.process || {};
+      $("m-global").innerHTML =
+        chip("Uptime", fmtDuration(m.uptimeMs)) +
+        chip("Frames in", m.framesReceived.toLocaleString()) +
+        chip("Audio in", fmtBytes(m.bytesReceived)) +
+        chip("Last audio", lastAudio) +
+        chip("Watchdog restarts", m.watchdogRestarts, m.watchdogRestarts > 0) +
+        chip("RSS", fmtBytes(p.rssBytes || 0)) +
+        chip("Heap used", fmtBytes(p.heapUsedBytes || 0));
+
+      $("m-bots").innerHTML = m.bots.map((b) => {
+        const pct = Math.min(100, (b.bufferBytes / MAX_BUF) * 100);
+        const fillCls = pct < 40 ? "buf-ok" : pct < 75 ? "buf-warn" : "buf-crit";
+        const stateCls = b.playerState === "playing" ? "s-playing"
+          : b.playerState === "buffering" ? "s-buffering"
+          : b.playerState === "autopaused" ? "s-autopaused"
+          : "s-idle";
+        const connLabel = b.voiceConnected
+          ? (b.speaking ? "🔊 speaking" : "🔇 in channel")
+          : "⭕ not connected";
+        const overflowHtml = b.bufferOverflows > 0
+          ? '<span class="m-overflow">⚠ ' + b.bufferOverflows + ' overflow' + (b.bufferOverflows > 1 ? "s" : "") + '</span>'
+          : "";
+        const reconnectHtml = b.reconnectCount > 0
+          ? '<span class="m-reconnect">↻ ' + b.reconnectCount + ' reconnect' + (b.reconnectCount > 1 ? "s" : "") + '</span>'
+          : "";
+        return [
+          '<div class="m-bot">',
+          '  <span class="m-bot-name">' + b.name + '</span>',
+          '  <span class="m-state ' + stateCls + '">' + b.playerState + '</span>',
+          '  <span class="m-conn">' + connLabel + '</span>',
+          '  <div class="m-buf-wrap">',
+          '    <div class="m-buf-lbl">Buffer ' + fmtBytes(b.bufferBytes) + ' / ' + fmtBytes(MAX_BUF) + '</div>',
+          '    <div class="m-buf-track"><div class="m-buf-fill ' + fillCls + '" style="width:' + pct.toFixed(1) + '%"></div></div>',
+          '  </div>',
+          reconnectHtml,
+          overflowHtml,
+          '</div>',
+        ].join("");
+      }).join("");
+    }
+
+    loadMetrics().catch(() => null);
+    setInterval(() => loadMetrics().catch(() => null), 2000);
   </script>
 </body>
 </html>`;

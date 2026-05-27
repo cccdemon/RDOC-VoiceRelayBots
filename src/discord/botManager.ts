@@ -1,4 +1,5 @@
 import type { BotConfig } from "../config.js";
+import type { BotMetrics } from "../metrics.js";
 import { RelayBot } from "./bot.js";
 
 const STAGGER_MS = 600;
@@ -30,6 +31,14 @@ export class BotManager {
   async destroy(): Promise<void> {
     await Promise.all(this.bots.map((b) => b.destroy()));
     this.bots = [];
+  }
+
+  getMetrics(): BotMetrics[] {
+    return this.bots.map((b) => b.getMetrics());
+  }
+
+  drainRecentOverflows(): number {
+    return this.bots.reduce((sum, b) => sum + b.drainRecentOverflows(), 0);
   }
 
   getVoiceStates(guildId: string): { channel_id: string | null; user_id: string; displayName: string }[] {
